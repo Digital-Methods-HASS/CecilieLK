@@ -1,0 +1,268 @@
+---
+title: "Game of Thrones Sentiment Analysis Assignment"
+author: "Thorbjørn Rød, Oliver Boisen, Cecilie Lykke"
+date: "`r Sys.Date()`"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE,
+                      warning = FALSE,
+                      message = FALSE)
+
+library(tidyverse)
+library(here)
+
+# For text mining:
+library(pdftools)
+library(tidytext)
+library(textdata) 
+library(ggwordcloud)
+
+# Note - Before lab:
+# Attach tidytext and textdata packages
+# Run: get_sentiments(lexicon = "nrc")
+# Should be prompted to install lexicon - choose yes!
+# Run: get_sentiments(lexicon = "afinn")
+# Should be prompted to install lexicon - choose yes!
+
+```
+
+**Note:** for more text analysis, you can fork & work through Casey O’Hara and Jessica Couture’s eco-data-sci workshop (available here https://github.com/oharac/text_workshop)
+
+### Obtaining the GoT data:
+
+Before we can make any form of analysis, we need to upload the GoT data set:
+
+```{r get-document}
+got_path <- here("data","got.pdf")
+got_text <- pdf_text(got_path)
+```
+
+## Line splitting:
+
+The first thing we do is split the book pages into individual lines:
+
+```{r split-lines}
+got_df <- data.frame(got_text) %>% 
+  mutate(text_full = str_split(got_text, pattern = '\n')) %>% 
+  unnest(text_full) %>% 
+  mutate(text_full = str_trim(text_full)) 
+
+# Why '\\n' instead of '\n'? Because some symbols (e.g. \, *) need to be called literally with a starting \ to escape the regular expression. For example, \\a for a string actually contains \a. So the string that represents the regular expression '\n' is actually '\\n'.
+# Although, this time round, it is working for me with \n alone. Wonders never cease.
+
+# More information: https://cran.r-project.org/web/packages/stringr/vignettes/regular-expressions.html
+
+```
+
+## Inclusion of Plots:
+
+From there we can then tokenize the split lines into individual words, using the following command:
+
+```{r tokenize}
+got_tokens <- got_df %>% 
+  unnest_tokens(word, text_full)
+got_tokens
+```
+
+### Removal of the stop words:
+
+The next step is to remove the stop words. These are words which we might deem unimportant to our analysis. This could be fx. "and, or, from":
+
+We will *remove* stop words using `tidyr::anti_join()`:
+```{r stopwords}
+got_stop <- got_tokens %>% 
+  anti_join(stop_words) %>% 
+  select(-got_text)
+```
+```{r count-words2}
+got_swc <- got_stop %>% 
+  count(word) %>% 
+  arrange(-n)
+```
+
+What if we then want to get rid of all the numbers (non-text) in `got_stop`?
+```{r skip-numbers}
+# This code will filter out numbers by asking:
+# If you convert to as.numeric, is it NA (meaning those words)?
+# If it IS NA (is.na), then keep it (so all words are kept)
+# Anything that is converted to a number is removed
+
+got_no_numeric <- got_stop %>% 
+  filter(is.na(as.numeric(word)))
+```
+```{r wordcloud-prep}
+# There are almost 2000 unique words 
+length(unique(got_no_numeric$word))
+
+# We probably don't want to include them all in a word cloud. Let's filter to only include the top 100 most frequent?
+got_top100 <- got_no_numeric %>% 
+  count(word) %>% 
+  arrange(-n) %>% 
+  head(100)
+```
+```{r wordcloud}
+got_cloud <- ggplot(data = got_top100, aes(label = word)) +
+  geom_text_wordcloud() +
+  theme_minimal()
+
+got_cloud
+```
+That's underwhelming. Let's customize it a bit:
+```{r wordcloud-pro}
+ggplot(data = got_top100, aes(label = word, size = n)) +
+  geom_text_wordcloud_area(aes(color = n), shape = "diamond") +
+  scale_size_area(max_size = 12) +
+  scale_color_gradientn(colors = c("darkgreen","blue","red")) +
+  theme_minimal()
+```
+In this analysis we will use two lexicons. The first is the 'afinn' lexicon:
+```{r afinn}
+get_sentiments(lexicon = "afinn")
+# Note: may be prompted to download (yes)
+
+# Let's look at the pretty positive words:
+afinn_pos <- get_sentiments("afinn") %>% 
+  filter(value %in% c(3,4,5))
+
+# Do not look at negative words in class. 
+afinn_pos
+```
+The second lexicon is 'bing':
+```{r bing}
+get_sentiments(lexicon = "bing")
+```
+
+The third lexicon is 'nrc':
+```{r nrc}
+get_sentiments(lexicon = "nrc")
+```
+
+sentiment analysis:
+
+```{r bind-afinn}
+got_afinn <- got_stop %>% 
+  inner_join(get_sentiments("afinn"))
+```
+Let's find some counts (by sentiment ranking):
+```{r count-afinn}
+got_afinn_hist <- got_afinn %>% 
+  count(value)
+
+# Plot them: 
+ggplot(data = got_afinn_hist, aes(x = value, y = n)) +
+  geom_col()
+```
+```{r afinn-2}
+# What are these '2' words?
+got_afinn_minus_2 <- got_afinn %>% 
+  filter(value == -2)
+```
+The reason for using '-2' is due to it being the highest value statistic in our plot.
+
+```{r afinn-2-more}
+# Check the unique 2-score words:
+unique(got_afinn_minus_2$word)
+
+# Count & plot them
+got_afinn_minus_2_n <- got_afinn_minus_2 %>% 
+  count(word, sort = TRUE) %>% 
+  mutate(word = fct_reorder(factor(word), n))
+
+
+ggplot(data = got_afinn_minus_2_n, aes(x = word, y = n)) +
+  geom_col() +
+  coord_flip()
+
+# OK so what's the deal with confidence? And is it really "positive" in the emotion sense? 
+```
+
+Sentiment summarized:
+
+```{r summarize-afinn}
+got_summary <- got_afinn %>% 
+  summarize(
+    mean_score = mean(value),
+    median_score = median(value)
+  )
+```
+
+### NRC lexicon for sentiment analysis
+
+We can use the NRC lexicon to start "binning" text by the feelings they're typically associated with. As above, we'll use inner_join() to combine the GoT non-stopword text with the nrc lexicon: 
+
+```{r bind-bing}
+got_nrc <- got_stop %>% 
+  inner_join(get_sentiments("nrc"))
+```
+Wait, won't that exclude some of the words in our text? YES! We should check which are excluded using `anti_join()`:
+
+```{r check-exclusions}
+got_exclude <- got_stop %>% 
+  anti_join(get_sentiments("nrc"))
+
+# View(got_exclude)
+
+# Count to find the most excluded:
+got_exclude_n <- got_exclude %>% 
+  count(word, sort = TRUE)
+
+head(got_exclude_n)
+```
+
+Now find some counts: 
+```{r count-bing}
+got_nrc_n <- got_nrc %>% 
+  count(sentiment, sort = TRUE)
+
+# And plot them:
+
+ggplot(data = got_nrc_n, aes(x = sentiment, y = n)) +
+  geom_col()
+```
+
+Or count by sentiment *and* word, then facet:
+```{r count-nrc}
+got_nrc_n5 <- got_nrc %>% 
+  count(word,sentiment, sort = TRUE) %>% 
+  group_by(sentiment) %>% 
+  top_n(5) %>% 
+  ungroup()
+
+got_nrc_gg <- ggplot(data = got_nrc_n5, aes(x = reorder(word,n), y = n, fill = sentiment)) +
+  geom_col(show.legend = FALSE) +
+  facet_wrap(~sentiment, ncol = 2, scales = "free") +
+  coord_flip() +
+  theme_minimal() +
+  labs(x = "Word", y = "count")
+
+# Show it
+got_nrc_gg
+
+# Save it
+ggsave(plot = got_nrc_gg, 
+       here("figures","got_nrc_sentiment.png"), 
+       height = 8, 
+       width = 5)
+
+```
+
+
+Wait, so "confidence" is showing up in NRC lexicon as "fear"? Let's check:
+```{r nrc-confidence}
+conf <- get_sentiments(lexicon = "nrc") %>% 
+  filter(word == "confidence")
+
+# Yep, check it out:
+conf
+```
+
+## Conclusion:
+
+From the plots we can conclude that Game of Thrones makes the most use of words which RStudio identifies as positive or negative. We can also conclude from the plot that despite the positive bar being highest, the majority of words are still negative, as 'anger', 'disgust', fear', and 'sadness' still have the larger majority over what we'd conceive as positive groups, like 'joy', 'anticipation', and 'surprise'.
+
+
+
